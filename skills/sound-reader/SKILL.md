@@ -1,6 +1,15 @@
 ---
 name: sound-reader
-description: Analyse audio files by rendering them into images (waveform, loudness, spectrogram with note axis, spectrum, sample-level zoom, plus on-demand views: event contact sheet, envelope, piano roll, harmonics, HPSS, song structure, stereo, reverb, loop seam) and exact numbers/CSVs (LUFS, clipping, hum, per-sound pitch contour, attack/decay, tempo, key) so a model that cannot hear can still "listen". Use whenever the user gives or mentions an audio/video file (.wav .mp3 .ogg .flac .m4a ...) and wants to know what it sounds like, what is wrong with it, or how two versions differ: game/UI sound effects, music/BGM, voice lines, TTS or generated audio, or debugging an audio pipeline (clicks, clipping, hum, silence, wrong pitch, loudness, phase, loop seams). Also use it for "listen to this", "check this sound", "why does this sound bad", even if they don't ask for images.
+description: >-
+  Analyse audio files by rendering them into images (waveform, loudness, spectrogram with note axis, spectrum,
+  sample-level zoom, plus on-demand views: event contact sheet, envelope, piano roll, harmonics, HPSS, song
+  structure, stereo, reverb, loop seam) and exact numbers/CSVs (LUFS, clipping, hum, per-sound pitch contour,
+  attack/decay, tempo, key) so a model that cannot hear can still "listen". Use whenever the user gives or
+  mentions an audio/video file (.wav .mp3 .ogg .flac .m4a ...) and wants to know what it sounds like, what is
+  wrong with it, or how two versions differ: game/UI sound effects, music/BGM, voice lines, TTS or generated
+  audio, or debugging an audio pipeline (clicks, clipping, hum, silence, wrong pitch, loudness, phase, loop
+  seams). Also use it for "listen to this", "check this sound", "why does this sound bad", even if they don't
+  ask for images.
 ---
 
 # sound-reader
