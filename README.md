@@ -48,6 +48,11 @@ To read formats other than WAV (mp3, m4a, ogg, flac, video, ...) you also need `
 /plugin install sound-reader@sound-reader
 ```
 
+If you have no GitHub SSH key and the first line fails to clone, use the HTTPS address instead:
+`/plugin marketplace add https://github.com/presentY1897/sound-reader.git`
+
+The plugin installs only the skill. The Python packages have to be installed separately (`pip install numpy scipy matplotlib`).
+
 ### Claude Code / Codex: clone + install script
 
 ```bash
