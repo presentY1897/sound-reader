@@ -619,11 +619,13 @@ def analyze(x: np.ndarray, sr: int, info: dict, music: bool = False):
         L, R = x[:, 0].astype(np.float64), x[:, 1].astype(np.float64)
         corr = float(np.sum(L * R) / (np.sqrt(np.sum(L ** 2) * np.sum(R ** 2)) + EPS))
         mid, side = (L + R) / 2, (L - R) / 2
+        s2m = db(np.sqrt(np.mean(side ** 2))) - db(np.sqrt(np.mean(mid ** 2)))
         res["stereo"] = {
             "correlation": r(corr, 3),
             "side_to_mid_db": r(db(np.sqrt(np.mean(side ** 2))) - db(np.sqrt(np.mean(mid ** 2))), 1),
             "balance_L_minus_R_db": r(db(np.sqrt(np.mean(L ** 2))) - db(np.sqrt(np.mean(R ** 2))), 2),
-            "effectively_mono": bool(np.max(np.abs(L - R)) < 1e-4),
+            # lossy stereo coding leaves tiny L/R differences, so also accept a negligible side signal
+            "effectively_mono": bool(np.max(np.abs(L - R)) < 1e-4 or (s2m < -30 and corr > 0.99)),
             "phase_issue_suspected": bool(corr < 0),
         }
 
@@ -677,7 +679,8 @@ def make_flags(res):
     st = res.get("stereo")
     if st:
         if st["effectively_mono"]:
-            fl.append("STEREO FILE IS EFFECTIVELY MONO (L == R)")
+            fl.append(f"STEREO FILE IS EFFECTIVELY MONO (L ~= R, side {st["side_to_mid_db"]} dB below mid) - "
+                      "could be saved as mono to halve the size")
         if st["phase_issue_suspected"]:
             fl.append(f"NEGATIVE L/R CORRELATION {st['correlation']} (phase problem, mono-collapse cancellation)")
         if abs(st["balance_L_minus_R_db"]) > 3:
