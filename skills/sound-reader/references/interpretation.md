@@ -71,7 +71,7 @@ Time runs along x, frequency along y (log scale by default, so octaves are equal
 | Missing fade at start/end | waveform jumps from or to non-zero at the edges | detail "First attack" starts vertically. A vertical line at t=0 or at the end |
 | Mains hum | horizontal lines at 50/60 Hz + multiples | `mains_hum.suspected`, peaks at 50/100/150 or 60/120/180 |
 | Hiss / noise floor | haze above 2 kHz during "silent" parts | `noise_floor_dbfs_p10`, `snr_estimate_db`, `quiet_frame_flatness` > 0.2 |
-| Low-pass / lossy / upsampled | hard ceiling in spectrogram | `bandwidth_hz_upper_-60db`, BAND-LIMITED flag |
+| Low-pass / lossy / upsampled | hard ceiling in spectrogram | `bandwidth_hz_upper_-60db`, BAND-LIMITED flag. If `file.lossy_codec` is set (mp3/ogg/aac/opus…), a ceiling around 15-20 kHz is just the encoder and not worth reporting as a problem. In a WAV/FLAC it means the audio was filtered or once passed through a lossy codec |
 | Aliasing | lines folding back down from the top | Inharmonic peaks that don't fit the harmonic series |
 | DC offset | waveform not centred | `dc_offset` > 0.01, DC OFFSET flag |
 | Phase / polarity problem | — | `stereo.correlation` < 0, NEGATIVE L/R flag. Sound cancels in mono |

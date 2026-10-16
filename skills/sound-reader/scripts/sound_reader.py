@@ -83,6 +83,7 @@ def load_audio(path: str, start: float | None = None, end: float | None = None):
             data, sr = _ffmpeg_decode(path, info)
     if data.ndim == 1:
         data = data[:, None]
+    info["lossy_codec"] = detect_lossy_codec(path, info.get("source_dtype", ""))
     info["sample_rate"] = int(sr)
     info["channels"] = int(data.shape[1])
     info["total_duration_s"] = round(data.shape[0] / sr, 4)
@@ -121,6 +122,27 @@ def _ffmpeg_decode(path: str, info: dict):
     info["decoded_with"] = "ffmpeg"
     info["source_dtype"] = "compressed/other (decoded to float32)"
     return raw.astype(np.float32), sr
+
+
+LOSSY_EXT = {".mp3": "MP3", ".ogg": "Vorbis", ".oga": "Vorbis", ".opus": "Opus", ".m4a": "AAC", ".aac": "AAC",
+             ".wma": "WMA", ".webm": "Opus/Vorbis", ".mp4": "AAC", ".mkv": "lossy?", ".amr": "AMR"}
+LOSSY_CODECS = ("mp3", "mpeg_layer", "vorbis", "opus", "aac", "wma", "amr", "ac3", "eac3", "dts")
+
+
+def detect_lossy_codec(path: str, subtype: str) -> str | None:
+    """Name of the lossy codec the audio went through, or None for PCM/FLAC/etc."""
+    st = subtype.lower()
+    for c in LOSSY_CODECS:
+        if c in st:
+            return subtype
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        r = subprocess.run([ffprobe, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name",
+                            "-of", "default=nw=1:nk=1", path], capture_output=True, text=True)
+        name = r.stdout.strip().lower()
+        if name:
+            return name if any(c in name for c in LOSSY_CODECS) else None
+    return LOSSY_EXT.get(Path(path).suffix.lower())
 
 
 def _ffprobe_sr(path: str) -> int | None:
@@ -645,7 +667,13 @@ def make_flags(res):
     sr = res["file"]["sample_rate"]
     bw = res["spectral"]["bandwidth_hz_upper_-60db"]
     if bw and sr >= 32000 and bw < 0.35 * sr and Sp["broadband_band_count"] >= 4:
-        fl.append(f"BAND-LIMITED: little energy above ~{int(bw)} Hz (sr {sr}) - possibly upsampled or lossy/low-pass")
+        codec = res["file"].get("lossy_codec")
+        if codec:
+            fl.append(f"BAND-LIMITED (expected): no energy above ~{int(bw)} Hz - the {codec} encoder's low-pass, "
+                      "normal for lossy files at this bitrate, not a defect of the source")
+        else:
+            fl.append(f"BAND-LIMITED: little energy above ~{int(bw)} Hz (sr {sr}) in an uncompressed file - "
+                      "it was likely low-passed, upsampled, or decoded from a lossy source earlier")
     st = res.get("stereo")
     if st:
         if st["effectively_mono"]:
