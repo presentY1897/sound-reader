@@ -65,7 +65,9 @@ def load_audio(path: str, start: float | None = None, end: float | None = None):
     data, sr = None, None
     if path.lower().endswith((".wav", ".wave")):
         try:
-            sr, raw = wavfile.read(path)
+            with warnings.catch_warnings():  # LIST/INFO metadata chunks are harmless
+                warnings.simplefilter("ignore", wavfile.WavFileWarning)
+                sr, raw = wavfile.read(path)
             info["source_dtype"] = str(raw.dtype)
             data = _to_float(raw)
         except Exception as e:  # odd wav subtypes -> fall through to ffmpeg
@@ -341,7 +343,7 @@ def detect_f0(mono: np.ndarray, sr: int, gate_db: float):
                 d = a - 2 * b + c
                 if abs(d) > EPS:
                     lagf[k] = lg + 0.5 * (a - c) / d
-        voiced = (val > 0.6) & (rms > gate_db)
+        voiced = (val > 0.6) & (rms > gate_db) & (lagf >= lag_min - 1) & (lagf <= lag_max + 1)
         f0[idx[voiced]] = sr2 / lagf[voiced]
         clar[idx] = val
     t = (np.arange(n_frames) * hop + win / 2) / sr2
@@ -538,7 +540,8 @@ def analyze(x: np.ndarray, sr: int, info: dict, music: bool = False):
     flux = np.concatenate([[0], flux])
     frame_rate = sr / shop
     if len(flux) > 3:
-        thr = sps.medfilt(flux, kernel_size=int(frame_rate * 0.5) | 1) + 0.5 * np.std(flux)
+        k = min(int(frame_rate * 0.5), len(flux) - 1) | 1  # medfilt warns if the kernel outgrows the signal
+        thr = sps.medfilt(flux, kernel_size=k) + 0.5 * np.std(flux)
         pk, _ = sps.find_peaks(flux, height=thr, distance=max(1, int(frame_rate * 0.05)))
     else:
         pk = np.array([], dtype=int)
@@ -560,12 +563,21 @@ def analyze(x: np.ndarray, sr: int, info: dict, music: bool = False):
     tf0, f0, clar = detect_f0(mono, sr, gate_db=sil_thr)
     tf0 = tf0 + off
     v = f0[np.isfinite(f0)]
+    both = np.isfinite(f0[1:]) & np.isfinite(f0[:-1])
+    steps = np.abs(12 * np.log2(f0[1:][both] / f0[:-1][both]))
+    hop_frac = float(np.mean(steps > 1.0)) if both.sum() > 10 else 0.0
+    # a real melody line moves smoothly frame to frame (10 ms); in chords / full mixes the
+    # tracker keeps hopping between instruments and octaves
+    reliable = len(v) > 0 and hop_frac < 0.08
     res["pitch"] = {
+        "reliable": bool(reliable),
+        "frame_jump_fraction": r(hop_frac, 3),
         "voiced_fraction": r(len(v) / max(1, len(f0)), 3),
         "f0_median_hz": r(np.median(v), 1) if len(v) else None,
         "f0_median_note": hz_to_note(np.median(v)) if len(v) else None,
         "f0_p10_p90_hz": [r(np.percentile(v, 10), 1), r(np.percentile(v, 90), 1)] if len(v) else None,
-        "note": "f0 is only meaningful for monophonic/periodic sounds (voice, single instrument, tones).",
+        "note": "f0 is only meaningful for monophonic/periodic sounds (voice, single instrument, tones); "
+                "reliable=false means the track jumps around (chords / full mix) - ignore f0 then.",
     }
 
     # --- tonality / key
@@ -720,12 +732,14 @@ def plot_overview(res, x, sr, out: Path, music=False, linear_freq=False, title="
     ax.axhline(s["sil_thr"], color="#888", ls=":", lw=1, label=f"silence thr {s['sil_thr']:.0f} dB")
     for a, b in s["silences"]:
         ax.axvspan(a, b, color="#bbb", alpha=0.35, lw=0)
-    for o in s["onsets"][:400]:
-        ax.axvline(o, color="#2ca02c", lw=0.6, alpha=0.6)
+    if len(s["onsets"]) <= 150:  # beyond that the ticks merge into a solid block
+        for o in s["onsets"]:
+            ax.axvline(o, color="#2ca02c", lw=0.6, alpha=0.6)
     lo = max(-90, np.percentile(s["env"], 1) - 5)
     ax.set_ylim(lo, 3)
     ax.set_ylabel("dB")
-    ax.set_title("Level over time (grey = silence, green ticks = onsets)")
+    ax.set_title("Level over time (grey = silence, green ticks = onsets"
+                 + (")" if len(s["onsets"]) <= 150 else f"; {len(s['onsets'])} onsets not drawn - zoom in)"))
     ax.legend(loc="lower right", fontsize=9, ncol=3)
 
     # spectrogram
@@ -751,9 +765,10 @@ def plot_overview(res, x, sr, out: Path, music=False, linear_freq=False, title="
         ax.yaxis.set_major_formatter(FuncFormatter(fmt_hz))
         ax.yaxis.set_minor_formatter(FuncFormatter(lambda *_: ""))
     vf = np.isfinite(s["f0"])
-    if vf.any() and res["pitch"]["voiced_fraction"] > 0.05:
+    if vf.any() and res["pitch"]["voiced_fraction"] > 0.05 and res["pitch"]["reliable"]:
         ax.plot(s["tf0"], s["f0"], color="cyan", lw=1.6, label="f0 estimate")
         ax.legend(loc="upper right", fontsize=9)
+    ax.set_ylim(edges[0], edges[-1])
     ax.set_ylabel("frequency (Hz)")
     ax.grid(alpha=0.15)
     ax.set_title(f"Spectrogram ({'linear' if linear_freq else 'log'} freq, dB, colour range {vmin:.0f}..{vmax:.0f})")
@@ -792,8 +807,12 @@ def plot_spectrum(res, out: Path, title=""):
     fig, (ax, bx) = plt.subplots(1, 2, figsize=(16, 5.5), gridspec_kw={"width_ratios": [3, 1]})
     m = wf >= 20
     ax.semilogx(wf[m], wdb[m], color="#1f77b4", lw=1.2)
+    labelled = []
     for p in res["spectral"]["dominant_peaks"]:
         ax.plot(p["hz"], p["db"], "o", color="red", ms=5)
+        if any(abs(math.log2(p["hz"] / q)) < 0.35 for q in labelled):
+            continue  # too close to an existing label; the dot is enough (values are in the JSON)
+        labelled.append(p["hz"])
         ax.annotate(f"{p['hz']:g} Hz\n{p['note']}", (p["hz"], p["db"]), textcoords="offset points",
                     xytext=(4, 6), fontsize=8.5, color="darkred")
     for _, lo, _hi in BANDS[1:]:
