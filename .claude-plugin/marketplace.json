@@ -1,11 +1,16 @@
 {
   "name": "sound-reader",
-  "owner": { "name": "presenty1897", "email": "presenty1897@gmail.com" },
+  "owner": {
+    "name": "presenty1897",
+    "email": "presenty1897@gmail.com"
+  },
+  "description": "sound-reader: let Claude 'hear' audio by turning it into waveform/spectrogram images plus exact measurements (LUFS, clipping, hum, pitch, tempo, stereo).",
   "plugins": [
     {
       "name": "sound-reader",
       "source": "./",
-      "description": "Audio → images + metrics so Claude can analyse sound files."
+      "description": "Audio → images + metrics so Claude can analyse and diagnose sound files (SFX, music, voice, pipeline debugging).",
+      "version": "0.1.0"
     }
   ]
 }
