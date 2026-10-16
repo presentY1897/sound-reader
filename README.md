@@ -55,13 +55,25 @@ The plugin installs only the skill. The Python packages have to be installed sep
 
 ### Claude app (claude.ai / desktop)
 
-1. Download `sound-reader.zip` from the [latest release](https://github.com/presentY1897/sound-reader/releases/latest).
-2. In the Claude app, enable **Settings → Capabilities → Code execution and file creation**.
-3. In the same screen, go to **Skills → Upload skill** and upload the zip.
-4. Attach an audio file to a conversation and ask, for example, "Analyse this sound".
+First enable **Code execution and file creation** in **Settings → Capabilities**. Skills run in the code execution environment.
+On Team/Enterprise, an admin may need to enable it under Organization settings → Plugins & skills.
 
-In the Claude app the analysis runs in its code execution sandbox. WAV works reliably. Formats such as mp3 or ogg
+**Option A: add the GitHub marketplace (recommended, Pro/Max/Team/Enterprise)**
+1. **Customize → Plugins → Add → Add marketplace**
+2. Enter `presentY1897/sound-reader` (or `https://github.com/presentY1897/sound-reader`)
+3. Install the `sound-reader` plugin from the list. The skill is included.
+
+Added this way, it **is also synced automatically to Claude Code** under the same account (shown as `claudeai-sound-reader`).
+
+**Option B: upload the zip (every plan)**
+1. Download `sound-reader.zip` from the [latest release](https://github.com/presentY1897/sound-reader/releases/latest).
+2. **Customize → Skills → + → Create skill → Upload a skill**, then upload the zip.
+
+Then attach an audio file to a conversation and ask, for example, "Analyse this sound". WAV works reliably. Other formats such as mp3 or ogg
 depend on whether the sandbox has `ffmpeg` or `soundfile`. If they fail, convert to WAV first.
+
+> Note: syncing only goes **claude.ai → Claude Code**. A plugin or skill installed with `/plugin` in Claude Code
+> does not appear in the Claude app. To use it in both, Option A is the most convenient.
 
 ### Claude Code / Codex: clone + install script
 
