@@ -55,6 +55,55 @@ def main():
 
     write("chirp.wav", 0.5 * chirp(t(3), 100, 3, 8000, method="logarithmic"))
 
+    # --- fixtures for events / views ---
+    def ding(freqs, d=0.3):
+        """Notes played one after another inside one sound, with a decaying envelope."""
+        y = np.concatenate([np.sin(2 * np.pi * f * t(d / len(freqs))) for f in freqs])
+        return 0.5 * y * np.exp(-np.arange(len(y)) / SR * 6)
+    gap = np.zeros(SR // 4)
+    # 3 separate sounds: rising C5->G5, falling G5->C5, flat A4
+    write("three_events.wav", np.concatenate([gap, ding([523.25, 783.99]), gap, ding([783.99, 523.25]), gap,
+                                              ding([440.0]), gap]))
+    write("loop_good.wav", 0.5 * np.sin(2 * np.pi * 240 * t(2)))      # whole number of cycles
+    write("loop_bad.wav", 0.5 * np.sin(2 * np.pi * 243.7 * t(2)))     # cut mid-cycle
+    n = int(1.5 * SR)
+    rev = rng.standard_normal(n) * np.exp(-6.9078 * t(1.5) / 0.6)    # RT60 = 0.6 s
+    write("rt60_0.6.wav", np.concatenate([np.zeros(SR // 10), 0.5 * rev / np.abs(rev).max(), np.zeros(SR // 4)]))
+    from scipy.signal import butter as _b, sosfilt as _sf
+    hiss = _sf(_b(4, 4000, "high", fs=SR, output="sos"), 0.2 * rng.standard_normal(len(t(2))))
+    tone = 0.4 * np.sin(2 * np.pi * 200 * t(2))
+    write("pan_highs_right.wav", np.stack([tone + 0.1 * hiss, tone + 0.9 * hiss], axis=1))
+    tb = t(1.5)
+    bar = sum(a * np.sin(2 * np.pi * 220 * r_ * tb) * np.exp(-tb * d) for a, r_, d in
+              [(1, 1, 2), (0.6, 2.756, 3), (0.4, 5.404, 4), (0.25, 8.933, 5)])
+    write("bar_inharmonic.wav", 0.4 * bar / np.abs(bar).max())
+    write("square_220.wav", 0.3 * np.sign(np.sin(2 * np.pi * 220 * t(1.5))))
+    # A-B-A structure (10 s each): tonal chord vs noisy drums
+    secA = 0.3 * (np.sin(2 * np.pi * 261.63 * t(10)) + np.sin(2 * np.pi * 329.63 * t(10)))
+    drums = np.zeros(len(t(10)))
+    for b in np.arange(0, 10, 0.25):
+        i = int(b * SR)
+        drums[i:i + 2000] += rng.standard_normal(2000) * np.exp(-np.arange(2000) / 300)
+    secB = 0.3 * drums + 0.2 * np.sin(2 * np.pi * 98 * t(10))
+    write("aba_structure.wav", np.concatenate([secA, secB, secA]) * 0.8)
+    # small BGM: 100 BPM (bar = 2.4 s), 4-bar quiet intro, then a 4-bar chord loop played 4 times with drums
+    beat, bar_n = 0.6, 4
+    prog = [[261.63, 329.63, 392.0], [220.0, 261.63, 329.63], [174.61, 220.0, 261.63], [196.0, 246.94, 293.66]]
+    intro = np.concatenate([0.05 * sum(np.sin(2 * np.pi * f_ * t(beat * bar_n)) for f_ in prog[k % 4])
+                            for k in range(4)])
+    main = []
+    for k in range(16):
+        tt = t(beat * bar_n)
+        y = 0.12 * sum(np.sin(2 * np.pi * f_ * tt) for f_ in prog[k % 4])
+        for bt in range(bar_n):
+            i = int(bt * beat * SR)
+            kick = np.sin(2 * np.pi * 55 * t(0.25)) * np.exp(-t(0.25) * 18)
+            y[i:i + len(kick)] += 0.6 * kick
+            j = int((bt + 0.5) * beat * SR)
+            y[j:j + 1500] += 0.08 * rng.standard_normal(1500) * np.exp(-np.arange(1500) / 200)
+        main.append(y)
+    write("bgm_loop.wav", np.concatenate([np.zeros(SR // 2), intro, *main, np.zeros(SR // 2)]))
+
 
 if __name__ == "__main__":
     main()

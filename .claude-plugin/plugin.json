@@ -1,6 +1,6 @@
 {
   "name": "sound-reader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Let Claude 'hear' audio: renders waveform, loudness, spectrogram and spectrum images plus exact measurements (LUFS, clipping, hum, pitch, tempo, key, stereo phase).",
   "author": { "name": "presenty1897", "email": "presenty1897@gmail.com" },
   "repository": "https://github.com/presentY1897/sound-reader",

@@ -94,7 +94,30 @@ python3 skills/sound-reader/scripts/sound_reader.py compare a.wav b.wav [--out D
 | `spectrum.png` | average spectrum with peaks labelled (Hz + note name) · energy per band |
 | `detail.png` | sample-level zooms of the loudest moment, the first attack, and the first clip |
 | `summary.json` | all measurements + automatic warnings (`flags`) |
-| `compare.png/json` | spectrum overlay, B−A difference, loudness comparison, metric changes |
+| `events.csv` | one row per separate sound: length, peak, attack/decay, dominant note, pitch movement (rising/falling/rise-fall), held notes |
+| `frames.csv` | time series (RMS, LUFS, f0, spectral peak, brightness): exact values in place of reading curves |
+| `compare.png/json` | spectrum overlay, B−A difference, loudness comparison, **time-aligned spectrogram difference** (when and in which band the two differ), metric changes |
+
+### On-demand views
+
+The default analysis covers most questions. When the interpretation needs more, the agent renders only the view it needs:
+
+```bash
+python3 skills/sound-reader/scripts/sound_reader.py view input.wav --kind <kind> [--event N]
+```
+
+| kind | Shows |
+|---|---|
+| `events` | every sound side by side on the same scale (contact sheet) |
+| `envelope` | attack / decay / end-cut markers per event |
+| `pianoroll` | semitone-resolution spectrogram (which notes, when) |
+| `harmonics` | harmonic structure: odd/even balance, brightness (tilt), inharmonic partials (bell / metal) |
+| `hpss` | tonal part vs. percussive part |
+| `structure` | self-similarity matrix and section repeats (A/B/A…) |
+| `stereo` | vectorscope, correlation over time, pan per band |
+| `reverb` | decay curves, EDT/T20/T30 |
+| `loop` | loop seam check (click, level and timbre jumps). Pass a loop range with `--start/--end`; it is judged against the song's natural continuation |
+| `loopfind` | suggests bar-aligned loop points for BGM (seconds and samples, seams checked) |
 
 ## What it measures
 
@@ -102,8 +125,9 @@ python3 skills/sound-reader/scripts/sound_reader.py compare a.wav b.wav [--out D
 - **Integrity**: clipping (flat-top detection), samples over full scale, leading/trailing silence, silence regions
 - **Noise**: noise floor, SNR estimate, 50/60 Hz mains hum detection, band-limiting (lossy / upsampled) detection
 - **Spectrum**: centroid, rolloff, flatness, effective bandwidth, energy share across 7 bands, dominant peaks (with note names)
-- **Rhythm**: onsets, tempo estimate
-- **Pitch / tonality**: f0 track and median (with note name), chroma, key estimate
+- **Rhythm**: onsets, tempo estimate, beat/bar grid (first downbeat, bar length)
+- **Pitch / tonality**: f0 track and median (with note name), chroma, key estimate, per-sound pitch contour and held notes
+- **Events**: automatic splitting at silence; per-sound envelope (attack/decay/end level) and pitch movement
 - **Stereo**: L/R correlation (phase problems), side/mid ratio, balance, fake-stereo detection
 
 ## Scope and limits

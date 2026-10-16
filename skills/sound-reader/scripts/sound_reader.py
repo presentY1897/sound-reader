@@ -37,6 +37,7 @@ except ImportError:  # pragma: no cover
 import warnings
 
 warnings.filterwarnings("ignore", module="matplotlib")
+warnings.filterwarnings("ignore", message="Mean of empty slice")  # all-NaN columns are expected (masked areas)
 import matplotlib
 
 matplotlib.use("Agg")
@@ -388,6 +389,61 @@ def estimate_tempo(flux: np.ndarray, frame_rate: float):
     return float(bpms[i]), float(vals[i])
 
 
+def beat_grid(flux, ts, f, S, bpm, beats_per_bar=4, t_start=0.0, frame_db=None):
+    """Place a beat grid on the tempo estimate: the phase that best lines up with onset strength, then the
+    downbeat = the beat (of beats_per_bar) where big changes (music start, section changes) and low-frequency
+    (kick/bass) onsets land. Kicks alone can't separate beat 1 from beat 3; section changes can."""
+    if not bpm or len(ts) < 8:
+        return None
+    period = 60.0 / bpm
+    hop = float(np.median(np.diff(ts)))
+    low = S[(f >= 30) & (f <= 150)].sum(axis=0)
+    lowflux = np.concatenate([[0], np.maximum(0, np.diff(np.log1p(100 * low / (low.max() + EPS))))])
+    lowflux /= lowflux.max() + EPS
+    # beats are where kicks/bass land; full-band flux alone locks onto off-beat hi-hats half a beat away
+    fl = flux / (flux.max() + EPS) + 2.0 * lowflux
+    best, phase = -1.0, 0.0
+    for ph in np.arange(0, period, max(hop / 2, 0.005)):
+        grid = np.arange(ts[0] + ph, ts[-1], period)
+        sc = float(np.mean(np.interp(grid, ts, fl))) if len(grid) else 0
+        if sc > best:
+            best, phase = sc, ph
+    b0 = ts[0] + phase
+    b0 -= np.floor((b0 - t_start + hop) / period) * period  # extend the grid back to the start of the file
+    beats = np.arange(b0, ts[-1], period)
+    # change points: where the level steps up by >= 6 dB within ~0.5 s (music start, drops, section entries)
+    changes = []
+    if frame_db is not None and len(frame_db) > 4:
+        k5 = max(1, int(0.5 / hop))
+        sm = np.convolve(frame_db, np.ones(k5) / k5, mode="same")
+        rise = np.zeros_like(sm)
+        rise[k5:] = sm[k5:] - sm[:-k5]
+        pk, _ = sps.find_peaks(rise, height=6, distance=max(1, int(4 / hop)))
+        # the step's onset is about half a window before the peak of the smoothed rise; bigger steps (music
+        # start, a drop) count more than a mid-phrase fill
+        changes = [(float(ts[i]) - 0.25, min(float(rise[i]), 20.0) - 5.0) for i in pk]
+    scores = []
+    for k in range(beats_per_bar):
+        bars = beats[k::beats_per_bar]
+        if not len(bars):
+            scores.append(0.0)
+            continue
+        kick = float(np.mean(np.interp(bars, ts, lowflux)))
+        if changes:
+            w = np.array([c[1] for c in changes])
+            hit = np.array([np.min(np.abs(bars - c[0])) < period / 2 for c in changes], dtype=float)
+            kick += 2.0 * float(np.sum(w * hit) / np.sum(w))
+        scores.append(kick)
+    k = int(np.argmax(scores))
+    first_down = float(beats[k]) if len(beats) > k else float(beats[0])
+    rand = float(np.mean(fl))
+    return {"beat_period_s": period, "first_beat_s": float(beats[0]) if len(beats) else None,
+            "bar_period_s": period * beats_per_bar, "first_downbeat_s": first_down,
+            "beats_per_bar_assumed": beats_per_bar,
+            "grid_strength": best / (rand + EPS),  # onset strength on the grid vs. average (1 = random)
+            "downbeat_confidence": (max(scores) - sorted(scores)[-2]) / (max(scores) + EPS) if len(scores) > 1 else 0}
+
+
 def estimate_key(chroma_mean: np.ndarray):
     major = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
     minor = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
@@ -516,6 +572,11 @@ def analyze(x: np.ndarray, sr: int, info: dict, music: bool = False):
         "leading_silence_s": r((tenv[np.argmax(act)] - off) if act.any() else n / sr, 3),
         "trailing_silence_s": r((off + n / sr - tenv[len(act) - 1 - np.argmax(act[::-1])]) if act.any() else n / sr, 3),
     }
+    sil_total = sum(b - a for a, b in silences)
+    res["dynamics"]["noise_floor_meaningful"] = bool(sil_total >= 0.02 * n / sr or noise_floor < -80)
+    if not res["dynamics"]["noise_floor_meaningful"]:
+        res["dynamics"]["note"] = ("no pauses: the 'floor' is the quietest 10% of the programme itself (music, "
+                                   "ambience), not background noise; SNR is really a dynamic-range figure")
 
     # --- spectral
     f, ts, S, n_fft, shop = stft_mag(mono, sr)
@@ -572,6 +633,7 @@ def analyze(x: np.ndarray, sr: int, info: dict, music: bool = False):
     if len(onsets) < 4 or (bpm_conf or 0) < 0.1:
         bpm = None  # no rhythmic content to speak of
     ioi = np.diff(onsets)
+    grid = beat_grid(flux, ts, f, S, bpm, t_start=off, frame_db=frame_db) if bpm else None
     res["rhythm"] = {
         "onset_count": int(len(onsets)),
         "onsets_s": [r(o, 3) for o in onsets[:200]],
@@ -579,11 +641,26 @@ def analyze(x: np.ndarray, sr: int, info: dict, music: bool = False):
         "median_inter_onset_s": r(np.median(ioi), 3) if len(ioi) else None,
         "tempo_bpm_estimate": r(bpm, 1),
         "tempo_confidence": r(bpm_conf, 2),
+        "grid": None if not grid else {k: (r(v, 4) if isinstance(v, float) else v) for k, v in grid.items()},
+        "grid_note": "bar n starts at first_downbeat_s + n * bar_period_s (4/4 assumed). Tempo can be off by x2; "
+                     "check the grid against onset ticks / the structure view before quoting bar numbers.",
     }
 
     # --- pitch
     tf0, f0, clar = detect_f0(mono, sr, gate_db=sil_thr)
     tf0 = tf0 + off
+    # drop "virtual" f0 frames: in chords the periodicity is a missing fundamental with no energy at that
+    # frequency (e.g. C3 under a C-E-G triad), which reads as a wrong note on the plot and in the CSV
+    vm = np.isfinite(f0)
+    virtual = 0
+    if vm.any() and len(ts):
+        col = np.clip(np.searchsorted(ts, tf0[vm]), 0, len(ts) - 1)
+        row = np.clip(np.searchsorted(f, f0[vm]), 1, len(f) - 2)
+        here = np.maximum.reduce([S[row - 1, col], S[row, col], S[row + 1, col]])
+        rel = 20 * np.log10((here + EPS) / (S[:, col].max(axis=0) + EPS))
+        bad = np.nonzero(vm)[0][rel < -25]
+        virtual = len(bad)
+        f0[bad] = np.nan
     v = f0[np.isfinite(f0)]
     both = np.isfinite(f0[1:]) & np.isfinite(f0[:-1])
     steps = np.abs(12 * np.log2(f0[1:][both] / f0[:-1][both]))
@@ -595,6 +672,7 @@ def analyze(x: np.ndarray, sr: int, info: dict, music: bool = False):
         "reliable": bool(reliable),
         "frame_jump_fraction": r(hop_frac, 3),
         "voiced_fraction": r(len(v) / max(1, len(f0)), 3),
+        "virtual_f0_frames_removed": int(virtual),
         "f0_median_hz": r(np.median(v), 1) if len(v) else None,
         "f0_median_note": hz_to_note(np.median(v)) if len(v) else None,
         "f0_p10_p90_hz": [r(np.percentile(v, 10), 1), r(np.percentile(v, 90), 1)] if len(v) else None,
@@ -629,11 +707,254 @@ def analyze(x: np.ndarray, sr: int, info: dict, music: bool = False):
             "phase_issue_suspected": bool(corr < 0),
         }
 
+    # --- events (separate sounds) with envelope + pitch movement
+    peak_track = spectral_peak_track(f, S)
+    t5, env5, events = detect_events(mono, sr, off, sil_thr, n)
+    for i, ev in enumerate(events, 1):
+        ev["index"] = i
+        describe_event(ev, t5, env5, tf0, f0, ts, peak_track, frame_db, centroid, onsets, off + n / sr, f, S, flat,
+                       x, mono, sr, off)
+    res["events"] = {"count": len(events), "list": [compact_event(e) for e in events[:40]]}
+
     res["_flags"] = make_flags(res)
     res["_series"] = dict(tenv=tenv, env=env, tz=tz + off, lk=lk, f=f, ts=ts, S=S, tf0=tf0, f0=f0,
                           C=C, onsets=onsets, wf=wf, wdb=wdb, silences=silences, sil_thr=sil_thr,
-                          centroid=centroid, clip=clipped.any(axis=1))
+                          centroid=centroid, clip=clipped.any(axis=1), flat=flat, peak_track=peak_track,
+                          t5=t5, env5=env5, events=events, mono=mono)
     return res
+
+
+# ----------------------------------------------------------------------------- events
+
+
+def spectral_peak_track(f, S, fmin=50.0):
+    """Frequency of the strongest spectral peak per frame, refined by parabolic interpolation."""
+    lo = int(np.searchsorted(f, fmin))
+    if lo >= len(f) - 2:
+        return np.zeros(S.shape[1])
+    L = np.log(S[lo:].astype(np.float64) + EPS)
+    i = np.argmax(L, axis=0)
+    i = np.clip(i, 1, L.shape[0] - 2)
+    cols = np.arange(L.shape[1])
+    a, b, c = L[i - 1, cols], L[i, cols], L[i + 1, cols]
+    d = a - 2 * b + c
+    shift = np.where(np.abs(d) > EPS, 0.5 * (a - c) / np.where(np.abs(d) > EPS, d, 1), 0.0)
+    return f[lo + i] + np.clip(shift, -0.5, 0.5) * (f[1] - f[0])
+
+
+def note_sequence(times, hz, min_dur=0.04, max_notes=10):
+    """Collapse a pitch track into the sequence of held notes, e.g. 'C5 E5 G5 C6'."""
+    seq, cur, t0 = [], None, None
+    for t, h in zip(times, hz):
+        m = int(round(69 + 12 * math.log2(h / 440))) if h and h > 0 and np.isfinite(h) else None
+        if m != cur:
+            if cur is not None and t - t0 >= min_dur and (not seq or seq[-1] != cur):
+                seq.append(cur)
+            cur, t0 = m, t
+    if cur is not None and times is not None and len(times) and times[-1] - t0 >= min_dur and (not seq or seq[-1] != cur):
+        seq.append(cur)
+    names = [f"{NOTE_NAMES[m % 12]}{m // 12 - 1}" for m in seq]
+    return " ".join(names[:max_notes]) + (" ..." if len(names) > max_notes else "")
+
+
+def detect_events(mono, sr, off, sil_thr, n, merge_gap=0.08, min_len=0.01, max_events=500):
+    """Split the signal into separate sounds: active regions above the silence threshold,
+    merging gaps shorter than merge_gap. Returns a fine (5 ms) envelope too."""
+    win, hop = max(1, int(0.01 * sr)), max(1, int(0.005 * sr))
+    env5 = db(frame_rms(mono, win, hop))
+    t5 = off + (np.arange(len(env5)) * hop + win / 2) / sr
+    regions = regions_from_mask(env5 > sil_thr, t5, 0.0)
+    merged = []
+    for a, b in regions:
+        if merged and a - merged[-1][1] < merge_gap:
+            merged[-1][1] = b
+        else:
+            merged.append([a, b])
+    events = []
+    for a, b in merged:
+        a, b = max(off, a - win / sr / 2), min(off + n / sr, b + win / sr / 2)  # frame centres -> frame edges
+        if b - a >= min_len - 1e-9:
+            events.append({"start_s": a, "end_s": b})
+    return t5, env5, events[:max_events]
+
+
+def _semitones(a, b):
+    return 12 * math.log2(b / a) if a and b and a > 0 and b > 0 else None
+
+
+def describe_event(ev, t5, env5, tf0, f0, ts, peak_track, frame_db, centroid, onsets, file_end, f, S, flat,
+                   x, mono, sr, off):
+    a, b = ev["start_s"], ev["end_s"]
+    ev["duration_s"] = b - a
+    m = (t5 >= a) & (t5 <= b)
+    e, te = env5[m], t5[m]
+    if not len(e):
+        return
+    i0, i1 = max(0, int((a - off) * sr)), min(len(x), int((b - off) * sr))
+    seg = x[i0:i1]
+    pk = int(np.argmax(e))
+    peak_db = float(e[pk])
+    ev["peak_dbfs"] = float(db(np.max(np.abs(seg)))) if len(seg) else peak_db  # true sample peak
+    ev["peak_rms10ms_dbfs"] = peak_db
+    ev["peak_time_s"] = float(te[pk])
+    ev["rms_dbfs"] = float(db(np.sqrt(np.mean(10 ** (e / 10)))))
+    ev["freq_res_hz"] = float(f[1] - f[0])
+    ev["onsets_inside"] = int(np.sum((onsets >= a) & (onsets <= b)))
+    ev["ends_at_file_end"] = bool(file_end - b < 0.01)
+    if ev["duration_s"] > 10:
+        # a long continuous stretch (music, ambience): attack/decay/start-vs-end pitch say nothing - use the views
+        return
+    # envelope (ADSR-style): attack = -20 dB point -> peak, decay = peak -> -20 dB below peak
+    # attack = from the -20 dB point to the FIRST local maximum near the top (a multi-hit event has several
+    # peaks; its attack is how fast the first hit lands, not when the loudest one arrives)
+    rise = np.nonzero(e[: pk + 1] >= peak_db - 20)[0]
+    first_top = pk
+    if len(rise):
+        for i in range(rise[0], pk):
+            if e[i] >= peak_db - 10 and e[i] >= e[i + 1]:
+                first_top = i
+                break
+    ev["attack_ms"] = 0.0
+    if len(rise):
+        # refine on a 0.5 ms grid (the 5 ms envelope can only say 5 or 10 ms)
+        j0 = max(0, int((te[rise[0]] - 0.012 - off) * sr))
+        j1 = min(len(mono), int((te[first_top] + 0.008 - off) * sr))
+        fine = db(frame_rms(mono[j0:j1], max(1, int(0.002 * sr)), max(1, int(0.0005 * sr)))) if j1 > j0 else []
+        if len(fine) > 2:
+            top_i = int(np.argmax(fine))
+            up = np.nonzero(fine[: top_i + 1] >= fine[top_i] - 20)[0]
+            ev["attack_ms"] = float((top_i - up[0]) * 0.5) if len(up) else 0.0
+        else:
+            ev["attack_ms"] = float((te[first_top] - te[rise[0]]) * 1000)
+    fall = np.nonzero(e[pk:] < peak_db - 20)[0]
+    ev["decay_to_-20db_ms"] = float((te[pk + fall[0]] - te[pk]) * 1000) if len(fall) else None
+    body = e[pk:]
+    ev["body_level_db_rel_peak"] = float(np.median(body) - peak_db) if len(body) > 2 else 0.0
+    ev["end_level_db_rel_peak"] = float(e[-1] - peak_db)
+    # pitch movement: f0 track if it is stable inside the event, otherwise the strongest spectral peak
+    mf = (tf0 >= a) & (tf0 <= b) & np.isfinite(f0)
+    fv = f0[mf]
+    f0_ok = False
+    if len(fv) >= 3:
+        steps = np.abs(12 * np.log2(fv[1:] / fv[:-1]))
+        # f0 must sit on real energy: chords/arpeggios give a "missing fundamental" with nothing there
+        col = np.clip(np.searchsorted(ts, tf0[mf]), 0, len(ts) - 1)
+        row = np.clip(np.searchsorted(f, fv), 1, len(f) - 2)
+        here = np.maximum.reduce([S[row - 1, col], S[row, col], S[row + 1, col]])
+        rel = 20 * np.log10((here + EPS) / (S[:, col].max(axis=0) + EPS))
+        fund_present = float(np.median(rel)) > -25
+        # count real jumps only: a sung/spoken glide can move ~1 semitone per 10 ms frame
+        coverage = mf.sum() / max(1, ((tf0 >= a) & (tf0 <= b)).sum())
+        f0_ok = fund_present and float(np.mean(steps > 3.0)) < 0.1 and coverage >= 0.5
+        k = max(1, min(3, len(fv) // 3))
+        ev["f0_start_hz"], ev["f0_end_hz"] = float(np.median(fv[:k])), float(np.median(fv[-k:]))
+        ev["f0_median_hz"] = float(np.median(fv))
+    ms = (ts >= a) & (ts <= b)
+    ms &= frame_db > (frame_db[ms].max() - 30 if ms.any() else -999)
+    if (ms & (flat < 0.2)).sum() >= 3:
+        ms &= flat < 0.2  # tonal frames only: hiss/noise frames have no meaningful peak
+    pt = peak_track[ms]
+    if len(pt):
+        k = max(1, len(pt) // 5)
+        ev["peak_start_hz"], ev["peak_end_hz"] = float(np.median(pt[:k])), float(np.median(pt[-k:]))
+        midi = np.round(69 + 12 * np.log2(np.maximum(pt, 1) / 440))
+        vals, counts = np.unique(midi, return_counts=True)
+        top = vals[np.argmax(counts)]
+        ev["dominant_hz"] = float(np.median(pt[midi == top]))
+        ev["centroid_hz"] = float(np.median(centroid[ms]))
+    track = fv if f0_ok else pt if len(pt) else None
+    if track is not None and len(track) >= 3:
+        ev["held_notes"] = note_sequence(tf0[mf] if f0_ok else ts[ms], track)
+        st = 12 * np.log2(track / track[0])
+        k = max(1, len(st) // 5)
+        s0, s1 = float(np.median(st[:k])), float(np.median(st[-k:]))
+        hi, lo = float(np.percentile(st, 95)), float(np.percentile(st, 5))
+        ev["pitch_range_st"] = hi - lo
+        if hi - max(s0, s1) > 2:
+            ev["pitch_contour"] = "rise-fall"
+        elif min(s0, s1) - lo > 2:
+            ev["pitch_contour"] = "fall-rise"
+        else:
+            ev["pitch_contour"] = "rising" if s1 - s0 > 1 else "falling" if s1 - s0 < -1 else "flat"
+    if f0_ok:
+        ch, src = _semitones(ev["f0_start_hz"], ev["f0_end_hz"]), "f0"
+    elif "peak_start_hz" in ev:
+        ch, src = _semitones(ev["peak_start_hz"], ev["peak_end_hz"]), "spectral_peak"
+    else:
+        ch, src = None, None
+    ev["pitch_change_st"] = ch
+    ev["pitch_source"] = src
+    ev["pitch_direction"] = (None if ch is None else "rising" if ch > 1 else "falling" if ch < -1 else "flat")
+
+
+EVENT_COLUMNS = ["index", "start_s", "end_s", "duration_s", "peak_time_s", "peak_dbfs", "peak_rms10ms_dbfs", "rms_dbfs",
+                 "attack_ms",
+                 "decay_to_-20db_ms", "body_level_db_rel_peak", "end_level_db_rel_peak", "ends_at_file_end",
+                 "onsets_inside", "dominant_hz", "dominant_note", "centroid_hz", "f0_start_hz", "f0_end_hz",
+                 "f0_median_hz", "peak_start_hz", "peak_end_hz", "pitch_change_st", "pitch_direction", "pitch_contour",
+                 "pitch_range_st", "pitch_source", "held_notes"]
+
+
+def compact_event(ev):
+    d = {"index": ev.get("index")}
+    for k in EVENT_COLUMNS[1:]:
+        v = ev.get(k)
+        if isinstance(v, float):
+            v = r(v, 1 if k.endswith(("_ms", "_hz", "_db", "_dbfs", "_st", "_peak")) else 3)
+        d[k] = v
+    if ev.get("dominant_hz"):
+        hz, res = ev["dominant_hz"], ev.get("freq_res_hz", 0)
+        if res and res / hz > 0.15:
+            # a bin spans >= ~2.5 semitones here (bass): even with peak interpolation the cents are not trustworthy
+            note = hz_to_note(hz)
+            d["dominant_note"] = "~" + note[: next((i for i, c in enumerate(note) if c in "+-" and i > 1), len(note))]
+        else:
+            d["dominant_note"] = hz_to_note(hz)
+    return d
+
+
+def write_csvs(res, out: Path):
+    """events.csv (one row per sound) and frames.csv (time series) for exact values."""
+    import csv
+
+    s = res["_series"]
+    rows = [compact_event(e) for e in s["events"]]
+    with open(out / "events.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=EVENT_COLUMNS)
+        w.writeheader()
+        w.writerows(rows)
+    dur = res["duration_s"]
+    off = res["file"].get("offset_s", 0.0)
+    step = max(0.02, dur / 2000)  # at most ~2000 rows
+    grid = np.arange(off, off + dur, step)
+
+    def at(t_src, v_src, how="interp"):
+        if len(t_src) == 0:
+            return np.full(len(grid), np.nan)
+        if how == "interp":
+            return np.interp(grid, t_src, v_src)
+        idx = np.clip(np.searchsorted(t_src, grid), 0, len(t_src) - 1)
+        return v_src[idx]
+
+    cols = {
+        "t_s": grid,
+        "rms_dbfs": at(s["tenv"], s["env"]),
+        "loudness_lufs_m": at(s["tz"], s["lk"]),
+        "f0_hz": at(s["tf0"], s["f0"], "nearest"),
+        "peak_hz": at(s["ts"], s["peak_track"], "nearest"),
+        "centroid_hz": at(s["ts"], s["centroid"], "nearest"),
+        "flatness": at(s["ts"], s["flat"], "nearest"),
+    }
+    with open(out / "frames.csv", "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(list(cols) + ["f0_note"])
+        for i in range(len(grid)):
+            row = []
+            for k, v in cols.items():
+                x = v[i]
+                row.append("" if not np.isfinite(x) else f"{x:.3f}" if k in ("t_s", "flatness") else f"{x:.1f}")
+            row.append(hz_to_note(cols["f0_hz"][i]) if np.isfinite(cols["f0_hz"][i]) else "")
+            w.writerow(row)
 
 
 def make_flags(res):
@@ -694,6 +1015,27 @@ plt.rcParams.update({
     "font.size": 11, "axes.titlesize": 12, "axes.labelsize": 11, "axes.grid": True,
     "grid.alpha": 0.35, "figure.dpi": 100, "savefig.dpi": 100,
 })
+
+
+def add_note_axis(ax, fmin, fmax, every="C"):
+    """Right-hand axis with note names (C1..C9) and faint guide lines, so pitches can be read off the image."""
+    notes = []
+    for octave in range(0, 10):
+        for name in (["C"] if every == "C" else NOTE_NAMES):
+            hz = 440.0 * 2 ** ((NOTE_NAMES.index(name) + 12 * (octave + 1) - 69) / 12)
+            if fmin <= hz <= fmax:
+                notes.append((hz, f"{name}{octave}"))
+    ax2 = ax.twinx()
+    ax2.set_yscale("log")
+    ax2.set_ylim(ax.get_ylim() if ax.get_ylim()[0] > 0 else (fmin, fmax))
+    ax2.set_yticks([h for h, _ in notes])
+    ax2.set_yticklabels([n for _, n in notes], fontsize=8)
+    ax2.yaxis.set_minor_formatter(FuncFormatter(lambda *_: ""))
+    ax2.tick_params(axis="y", which="minor", length=0)
+    ax2.grid(False)
+    for h, nm in notes:
+        ax.axhline(h, color="white", lw=0.4, alpha=0.25 if nm[0] != "C" or every != "C" else 0.35, ls=":")
+    return ax2
 
 
 def _logfreq_image(f, S, fmin=20.0, n_bins=320):
@@ -800,10 +1142,12 @@ def plot_overview(res, x, sr, out: Path, music=False, linear_freq=False, title="
         ax.plot(s["tf0"], s["f0"], color="cyan", lw=1.6, label="f0 estimate")
         ax.legend(loc="upper right", fontsize=9)
     ax.set_ylim(edges[0], edges[-1])
+    if not linear_freq:
+        add_note_axis(ax, edges[0], edges[-1])
     ax.set_ylabel("frequency (Hz)")
     ax.grid(alpha=0.15)
     ax.set_title(f"Spectrogram ({'linear' if linear_freq else 'log'} freq, dB, colour range {vmin:.0f}..{vmax:.0f})")
-    cax = fig.add_axes([0.915, 0.12 if not music else 0.28, 0.008, 0.3])
+    cax = fig.add_axes([0.945, 0.12 if not music else 0.28, 0.008, 0.3])
     fig.colorbar(mesh, cax=cax, label="dB")
 
     if music:
@@ -827,7 +1171,7 @@ def plot_overview(res, x, sr, out: Path, music=False, linear_freq=False, title="
         f"RMS {L['rms_dbfs']} dBFS  {L['integrated_lufs']} LUFS",
         fontsize=13, fontweight="bold",
     )
-    fig.subplots_adjust(left=0.06, right=0.9, top=0.94, bottom=0.05, hspace=0.35)
+    fig.subplots_adjust(left=0.06, right=0.905, top=0.94, bottom=0.05, hspace=0.35)
     fig.savefig(out)
     plt.close(fig)
 
@@ -932,12 +1276,16 @@ def print_summary(res, paths):
         + (f" | window {f['window_s']} of {f['total_duration_s']} s" if "window_s" in f else ""),
         f"LEVEL peak {L['peak_dbfs']} dBFS | true-peak {L['true_peak_dbtp']} dBTP | RMS {L['rms_dbfs']} dBFS | "
         f"crest {L['crest_factor_db']} dB | {L['integrated_lufs']} LUFS-I | LRA {L['loudness_range_lu']} LU",
-        f"NOISE floor {D['noise_floor_dbfs_p10']} dBFS | SNR~{D['snr_estimate_db']} dB | "
-        f"silence {D['silence_total_s']} s in {len(D['silence_regions_s'])} regions",
+        (f"NOISE floor {D['noise_floor_dbfs_p10']} dBFS | SNR~{D['snr_estimate_db']} dB | "
+         if D.get("noise_floor_meaningful", True) else
+         f"NOISE n/a (no pauses; quietest 10% of the programme is {D['noise_floor_dbfs_p10']} dBFS) | ")
+        + f"silence {D['silence_total_s']} s in {len(D['silence_regions_s'])} regions",
         f"SPECT centroid {Sp['centroid_hz_median']} Hz | rolloff85 {Sp['rolloff85_hz_median']} Hz | "
         f"flatness {Sp['flatness_median']} | top peaks "
         + ", ".join(f"{p['hz']:g}Hz({p['note']})" for p in Sp["dominant_peaks"][:4]),
-        f"RHYTHM {Rh['onset_count']} onsets | tempo~{Rh['tempo_bpm_estimate']} BPM (conf {Rh['tempo_confidence']})",
+        f"RHYTHM {Rh['onset_count']} onsets | tempo~{Rh['tempo_bpm_estimate']} BPM (conf {Rh['tempo_confidence']})"
+        + (f" | bar {Rh['grid']['bar_period_s']} s, first downbeat {Rh['grid']['first_downbeat_s']} s "
+           f"(grid strength {Rh['grid']['grid_strength']})" if Rh.get("grid") else ""),
         f"PITCH voiced {Pi['voiced_fraction']} | f0 median {Pi['f0_median_hz']} Hz ({Pi['f0_median_note']})",
         f"KEY   {res['tonal']['key_estimate']} (r={res['tonal']['key_correlation']})",
     ]
@@ -945,8 +1293,16 @@ def print_summary(res, paths):
         st = res["stereo"]
         lines.append(f"STEREO corr {st['correlation']} | side/mid {st['side_to_mid_db']} dB | "
                      f"L-R {st['balance_L_minus_R_db']} dB")
+    ev = res["events"]["list"]
+    if ev:
+        def one(e):
+            note = f" {e['dominant_note']}" if e.get("dominant_note") else ""
+            mv = f" {e['pitch_direction']} {e['pitch_change_st']:+.1f}st" if e.get("pitch_change_st") is not None else ""
+            return f"#{e['index']} {e['start_s']}-{e['end_s']}s{note}{mv}"
+        more = f" ... (+{res['events']['count'] - 8} more)" if res["events"]["count"] > 8 else ""
+        lines.append(f"EVENTS {res['events']['count']}: " + " | ".join(one(e) for e in ev[:8]) + more)
     lines.append("FLAGS " + ("; ".join(res["_flags"]) if res["_flags"] else "none"))
-    lines.append("IMAGES " + " ".join(str(p) for p in paths))
+    lines.append("FILES " + " ".join(str(p) for p in paths))
     print("\n".join(lines))
 
 
@@ -969,8 +1325,93 @@ def cmd_analyze(a):
     pub = public(res)
     pub["flags"] = pub.pop("_flags")
     pub["images"] = [str(p) for p in paths]
+    write_csvs(res, out)
+    pub["tables"] = [str(out / "events.csv"), str(out / "frames.csv")]
     (out / "summary.json").write_text(json.dumps(pub, indent=2, ensure_ascii=False))
-    print_summary(res, paths + [out / "summary.json"])
+    print_summary(res, paths + [out / "summary.json", out / "events.csv", out / "frames.csv"])
+
+
+def cmd_view(a):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import views
+
+    if a.kind == "list":
+        for k, v in views.KINDS.items():
+            print(f"{k:10s} {v}")
+        return
+    loop_kinds = ("loop", "loopfind")
+    # for loops, --start/--end are the loop points: keep the whole file so the audio around them is available
+    x, sr, info = load_audio(a.file, *((None, None) if a.kind in loop_kinds else (a.start, a.end)))
+    if x.shape[0] == 0:
+        sys.exit("Selected window is empty.")
+    suffix = f"_{a.start or 0:g}-{a.end:g}s" if a.end and a.kind not in loop_kinds else ""
+    out = Path(a.out) if a.out else default_out(a.file, suffix)
+    out.mkdir(parents=True, exist_ok=True)
+    res = analyze(x, sr, info)
+    views.VIEWS[a.kind](res, x, sr, out, a)
+
+
+def aligned_difference(sa, sb, max_shift_s=2.0):
+    """Line B up with A (envelope cross-correlation), then diff their log-frequency spectrograms."""
+    ea, eb = 10 ** (sa["env"] / 20), 10 ** (sb["env"] / 20)
+    step = float(np.median(np.diff(sa["tenv"]))) if len(sa["tenv"]) > 1 else 0.01
+    n = min(len(ea), len(eb))
+    max_lag = int(min(max_shift_s / step, n // 2))
+    best, lag = -np.inf, 0
+    if max_lag > 0:
+        xa_, xb_ = ea - ea.mean(), eb - eb.mean()
+        for L in range(-max_lag, max_lag + 1):
+            if L >= 0:
+                u, v = xa_[: len(xa_) - L], xb_[L:]
+            else:
+                u, v = xa_[-L:], xb_[: len(xb_) + L]
+            m = min(len(u), len(v))
+            if m < 10:
+                continue
+            c = float(np.dot(u[:m], v[:m]) / (np.linalg.norm(u[:m]) * np.linalg.norm(v[:m]) + EPS))
+            if c > best:
+                best, lag = c, L
+    offset = lag * step  # B content appears `offset` seconds later than in A
+    edges, ia = _logfreq_image(sa["f"], sa["S"])
+    eb_, ib = _logfreq_image(sb["f"], sb["S"])
+    if len(eb_) != len(edges) or not np.allclose(eb_, edges):
+        ca, cb = np.sqrt(edges[:-1] * edges[1:]), np.sqrt(eb_[:-1] * eb_[1:])
+        ib = np.array([np.interp(ca, cb, ib[:, j]) for j in range(ib.shape[1])]).T
+    tb = sb["ts"] - offset
+    cols = np.clip(np.searchsorted(tb, sa["ts"]), 0, len(tb) - 1)
+    ib_on_a = ib[:, cols]
+    # ~50 ms smoothing in time: sub-frame misalignment of sharp transients would otherwise light up as
+    # red/blue line pairs that hide the real (sustained) differences
+    hop_s = float(np.median(np.diff(sa["ts"]))) if len(sa["ts"]) > 1 else 0.01
+    k = max(1, int(round(0.05 / hop_s)))
+    if k > 1:
+        from scipy.ndimage import uniform_filter1d
+
+        ia = 10 * np.log10(uniform_filter1d(10 ** (ia / 10), k, axis=1) + EPS)
+        ib_on_a = 10 * np.log10(uniform_filter1d(10 ** (ib_on_a / 10), k, axis=1) + EPS)
+    floor = max(ia.max(), ib.max()) - 70
+    diff = np.where((ia > floor) | (ib_on_a > floor), ib_on_a - ia, np.nan)
+    diff[:, (sa["ts"] < tb[0]) | (sa["ts"] > tb[-1])] = np.nan  # no overlap after shifting: not a difference
+    t, diff_p = _pool_time(sa["ts"], np.nan_to_num(diff, nan=0.0))
+    # pooled with max() would hide negative differences: pool by mean of the signed values instead
+    if diff_p.shape[1] != diff.shape[1]:
+        k = int(math.ceil(diff.shape[1] / diff_p.shape[1]))
+        m = diff.shape[1] // k * k
+        diff_p = np.nanmean(diff[:, :m].reshape(diff.shape[0], -1, k), axis=2)
+        t = sa["ts"][:m:k]
+    col_err = np.nan_to_num(np.nanmean(np.abs(diff), axis=0), nan=0.0)
+    # rank sustained differences: a 0.3 s moving average stops single-frame transient mismatches from winning
+    w = max(1, int(0.3 / max(float(np.median(np.diff(sa["ts"]))) if len(sa["ts"]) > 1 else 0.01, 1e-3)))
+    col_err = np.convolve(col_err, np.ones(w) / w, mode="same")
+    hot = []
+    for i in np.argsort(col_err)[::-1]:
+        if all(abs(sa["ts"][i] - h) > 0.5 for h in hot):
+            hot.append(float(sa["ts"][i]))
+        if len(hot) == 5:
+            break
+    return {"t": t, "edges": edges, "diff": diff_p, "offset_s": offset, "align_corr": best,
+            "mean_abs_diff_db": float(np.nanmean(np.abs(diff))), "hotspots": sorted(hot),
+            "hotspot_diff_db": [float(col_err[np.argmin(np.abs(sa["ts"] - h))]) for h in sorted(hot)]}
 
 
 def cmd_compare(a):
@@ -983,7 +1424,8 @@ def cmd_compare(a):
     if na == nb:
         na, nb = f"A:{a.file_a}", f"B:{a.file_b}"
     sa, sb = ra["_series"], rb["_series"]
-    fig, axes = plt.subplots(3, 1, figsize=(16, 13))
+    al = aligned_difference(sa, sb)
+    fig, axes = plt.subplots(4, 1, figsize=(16, 18), gridspec_kw={"height_ratios": [1, 1, 1, 1.5]})
     ax = axes[0]
     ax.semilogx(sa["wf"][1:], sa["wdb"][1:], label=na, lw=1.2)
     ax.semilogx(sb["wf"][1:], sb["wdb"][1:], label=nb, lw=1.2, alpha=0.8)
@@ -1013,6 +1455,20 @@ def cmd_compare(a):
     ax.set_title("Momentary loudness (LUFS, 400 ms)")
     ax.set_xlabel("time (s)")
     ax.legend()
+    ax = axes[3]
+    dt = (al["t"][1] - al["t"][0]) if len(al["t"]) > 1 else 0.01
+    mesh = ax.pcolormesh(np.concatenate([al["t"] - dt / 2, [al["t"][-1] + dt / 2]]), al["edges"], al["diff"],
+                         cmap="RdBu_r", vmin=-20, vmax=20, shading="flat", rasterized=True)
+    ax.set_yscale("log")
+    ax.yaxis.set_major_formatter(FuncFormatter(fmt_hz))
+    ax.set_ylim(al["edges"][0], al["edges"][-1])
+    for t0 in al["hotspots"]:
+        ax.axvline(t0, color="k", lw=0.8, ls="--")
+    ax.set_title(f"Time-aligned spectrogram difference B - A (red = louder in B, blue = louder in A; "
+                 f"B shifted by {al['offset_s']:+.3f} s to line up; dashed = biggest differences)")
+    ax.set_xlabel("time in A (s)")
+    ax.set_ylabel("Hz")
+    fig.colorbar(mesh, ax=ax, label="dB", pad=0.01)
     fig.tight_layout()
     fig.savefig(out / "compare.png")
     plt.close(fig)
@@ -1031,6 +1487,10 @@ def cmd_compare(a):
     delta = {k: {"a": fa[k], "b": fb.get(k), "b_minus_a": r(fb[k] - fa[k], 3)}
              for k in fa if k in fb and fa[k] is not None and fb[k] is not None and fa[k] != fb[k]}
     comp = {"a": na, "b": nb, "flags_a": ra["_flags"], "flags_b": rb["_flags"], "metric_deltas": delta,
+            "alignment": {"b_offset_s": r(al["offset_s"], 3), "envelope_corr": r(al["align_corr"], 3),
+                          "mean_abs_spectrogram_diff_db": r(al["mean_abs_diff_db"], 1),
+                          "biggest_difference_times_s": [r(h, 2) for h in al["hotspots"]],
+                          "biggest_difference_db": [r(d, 1) for d in al["hotspot_diff_db"]]},
             "image": str(out / "compare.png")}
     (out / "compare.json").write_text(json.dumps(comp, indent=2, ensure_ascii=False))
     print(f"A = {na}\nB = {nb}")
@@ -1039,6 +1499,8 @@ def cmd_compare(a):
               "pitch.f0_median_hz"):
         if k in fa or k in fb:
             print(f"  {k:34s} A={fa.get(k)!s:>10}  B={fb.get(k)!s:>10}")
+    print(f"ALIGN B offset {al['offset_s']:+.3f} s (corr {al['align_corr']:.2f}) | mean |B-A| "
+          f"{al['mean_abs_diff_db']:.1f} dB | biggest differences at " + ", ".join(f"{h:.2f}s" for h in al["hotspots"]))
     print("FLAGS A: " + ("; ".join(ra["_flags"]) or "none"))
     print("FLAGS B: " + ("; ".join(rb["_flags"]) or "none"))
     print(f"IMAGES {out / 'compare.png'} {out / 'compare.json'}")
@@ -1055,6 +1517,16 @@ def main(argv=None):
     pa.add_argument("--music", action="store_true", help="add chromagram panel")
     pa.add_argument("--linear-freq", action="store_true", help="linear frequency axis on the spectrogram")
     pa.set_defaults(func=cmd_analyze)
+    pv = sub.add_parser("view", help="extra on-demand view (run 'view - --kind list' to see all)")
+    pv.add_argument("file")
+    pv.add_argument("--kind", required=True,
+                    choices=["list", "events", "envelope", "pianoroll", "hpss", "structure", "stereo", "harmonics",
+                             "reverb", "loop", "loopfind"])
+    pv.add_argument("--event", type=int, help="event index (from events.csv) for envelope/harmonics/reverb")
+    pv.add_argument("--out")
+    pv.add_argument("--start", type=float)
+    pv.add_argument("--end", type=float)
+    pv.set_defaults(func=cmd_view)
     pc = sub.add_parser("compare", help="compare two files (A vs B)")
     pc.add_argument("file_a")
     pc.add_argument("file_b")

@@ -5,6 +5,7 @@
 2. Visual signatures of common problems
 3. Metric reference and typical targets
 4. Domain checklists (SFX / music / speech / pipeline debugging)
+5. Reading the follow-up views (`view --kind ...`) and the aligned compare
 
 ---
 
@@ -142,3 +143,96 @@ Time runs along x, frequency along y (log scale by default, so octaves are equal
   regularly spaced gaps or clicks in the spectrogram, a sign of buffer-size issues)
 - `compare` the output against a known-good reference. A flat B−A difference with a constant offset is just gain.
   A sloped difference means filtering. Large narrow differences mean added tones or artefacts.
+
+---
+
+## 5. Reading the follow-up views
+
+**events (contact sheet)**: every sound uses the same amplitude and colour scale, so you can compare them directly.
+Different heights mean inconsistent levels across a set. A cyan label shows the held notes. Use it to describe each sound
+in one line (e.g. "#4: E5→G5→C6 arpeggio, 1.05 s, bell-like"). Then check consistency: similar sounds should have
+similar peak, length and brightness.
+
+**envelope**:
+- **Green** is the attack. Under 10 ms feels instant or percussive, 30–100 ms soft, over 150 ms a swell.
+- **Orange** is the decay to −20 dB.
+- "never decays 20 dB" means a sustained or cut sound. If `ends_at_file_end` is true and the end level is still above
+  about −30 dB re peak, the tail is cut and will click.
+- A second bump is a second hit or note inside the same event.
+
+**pianoroll**: rows are semitones and white lines mark each C. Read notes straight off the rows. Harmonics of one note
+appear 12 rows up (octave), 19 (octave + fifth) and 24 above it, so don't mistake them for chord tones. Chord tones sit
+3–4 / 7 rows apart within the same octave. The time resolution is about 0.2 s, so fast runs smear.
+
+**harmonics**:
+- **Harmonic**: green dashed lines with peaks on them, and a bar per k.
+- **Odd/even balance**:
+  - odd ≫ even (+15 dB or more) means hollow, square, clarinet-like
+  - balanced means sawtooth, brass or voice-like
+- **Tilt (dB per octave of harmonic number)**:
+  - about −6 is neutral (sawtooth or square)
+  - −10 or below is dull, soft or filtered
+  - −3 or above is bright, harsh or buzzy
+- **Inharmonic**: red off-series partials with non-integer ratios.
+  - ×2.76 and ×5.40 are a free bar (glockenspiel, xylophone)
+  - ×1.59 and ×2.14 are a membrane (drum)
+  - irregular ratios point to a bell, metal or FM synthesis
+- Cents off above about 15 on low harmonics means detuning or chorus. Rising sharpness at higher k is piano-like stiffness.
+
+**hpss**:
+- The top panel keeps sustained horizontal lines (notes, hum, drones).
+- The middle panel keeps vertical lines (hits, clicks, consonants) and noise bursts.
+- More than about 50% percussive energy means drum- or impact-driven material.
+- A percussive line inside a "clean" tone means a click or discontinuity.
+
+**structure**:
+- Bright square blocks on the diagonal are sections that stay similar internally.
+- Bright blocks *off* the diagonal are repeats. The row and column times say which parts match.
+- Peaks in the novelty curve are section changes.
+- Labels: the same letter means similar material (A … A = a return, e.g. chorus or main theme). Silence at the
+  start and end often shares a letter.
+- Combine with loudness to name sections (intro, build, drop/chorus, breakdown, outro). Treat the names as an inference.
+- `repeat_lags`: `short` = riff or pattern length, `phrase` = how far apart whole phrases repeat. A phrase lag of exactly
+  8, 16 or 32 bars is the natural loop length.
+
+**loopfind**:
+- Candidates are ranked by `match_score`, the similarity between what follows the end point in the song and what
+  follows the start point. Above about 0.9 the jump sounds like the song's own continuation.
+- Prefer candidates that start on a section boundary and that are long, so the loop repeats less often.
+- An intro that is played once and never returns is excluded automatically, since nothing matches it.
+- Always confirm the pick with `view --kind loop --start S --end E`. Give the user both seconds and sample numbers.
+
+**stereo**:
+- **Vectorscope**: a thin vertical line is mono. A tall ellipse is a normal mix. A round blob is very wide or
+  decorrelated. A horizontal shape means out of phase (cancels in mono).
+- **Correlation curve**: dips below 0 are mono-compatibility risks.
+- **Pan map**: blue = left, red = right, white = centre. Bass and kick normally stay white (centred). Anything else
+  is a mix choice worth mentioning.
+
+**reverb**:
+- The curves are Schroeder energy decay.
+- A straight line is one clean exponential decay. Its T20/T30 is the ring-out time.
+- A knee (fast drop, then a slower tail) means a dry sound followed by reverb or room. The slow part is the space.
+- Typical decay times:
+  - under 0.3 s: dry booth or close mic
+  - 0.4–0.8 s: normal room
+  - 1–2 s: hall or plate
+  - over 2.5 s: cathedral or huge FX reverb
+- If the high band decays much faster than the low band, the space is damped or dark, which is natural for real rooms.
+- These are decay times of *this sound*. A synthesized decay is not a room.
+
+**loop**: "seamless" means no click, level jump or timbre jump at end→start. When audio continues after the end
+point, the jump is judged against that *natural continuation*. A loop that lands on a downbeat may get louder, and
+that's fine if the song does the same at that point. The grey dashed line in the top panel is the original continuation.
+- **CLICK**: the sample zoom shows a step at 0, or the spectrogram shows a vertical line at the loop point.
+  Fix with a zero-crossing cut or a 5–20 ms crossfade.
+- **LEVEL JUMP**: the fade-in or fade-out doesn't match. Remove the fades or crossfade the loop.
+- **TIMBRE JUMP**: the end and start are different material. Choose another loop point.
+
+**compare: aligned difference**: B is shifted to line up with A, then the difference is coloured.
+- Red means louder in B, blue means louder in A.
+- A blue block above some frequency over a time range means B is low-passed there.
+- A thin red vertical line means a click added in B.
+- A uniform tint everywhere is just a gain change. Check `level.*` deltas.
+- Ignore isolated red/blue line *pairs* at sharp hits: those are sub-frame alignment jitter, not real differences.
+
