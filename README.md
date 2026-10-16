@@ -11,7 +11,30 @@ It works for any kind of sound: game/UI sound effects, music, voice recordings, 
 > and ships an **interpretation guide** (`references/interpretation.md`) that tells the agent what each pattern in the images means, so the agent can diagnose the sound itself.
 > It runs on pure Python (numpy/scipy/matplotlib), so no separate binary install is needed.
 
-![overview example](docs/example-overview.png)
+## Demo: "Is anything wrong with this coin sound?"
+
+[`docs/examples/coin_pickup.wav`](docs/examples/coin_pickup.wav) has 5 defects planted in it. We gave this file to an agent
+with no prior context, together with only this skill's `SKILL.md`, and asked:
+
+> I'm making a coin pickup sound for my game. I'm not sure it sounds right — can you check whether there are any problems?
+
+The agent ran the analyzer, looked at the images, and answered (excerpt):
+
+> 1. **It's clipping.** The left channel sits flat against full scale from 0.250 to 0.38 s (1,536 samples, 96 runs), and the true peak is +0.18 dBTP. The spectrogram also shows harmonics up to 20 kHz appearing only during that stretch.
+> 2. **The end is cut off, so it will click.** The last sample is at −0.128 (about −18 dBFS). Add a 5–20 ms fade-out.
+> 3. **There is 0.25 s of silence before the sound starts.** That is a quarter-second delay after touching the coin. Trim the start.
+> 4. **There is a 60 Hz hum underneath.** About −48 dBFS, present even in the silent lead-in. A high-pass at 100–150 Hz fixes it.
+> 5. **Left/right imbalance of 4.4 dB.** The sound leans left.
+>
+> *Design note:* the pitch falls from 870 → 330 Hz. Coin sounds usually rise, and falling pitch reads as "fail / lose".
+
+It found all 5 planted defects and also raised a design issue nobody had told it about.
+
+| overview.png | detail.png |
+|---|---|
+| ![coin overview](docs/demo-coin-overview.png) | ![coin detail](docs/demo-coin-detail.png) |
+
+Other real-world tests: it split a set of 6 UI sound effects by note and purpose (positive = rising, error = falling), and it worked out a 3:38 electronic track's intro → filter opening → riser → drop structure along with its mastering state (−9.5 LUFS, +0.94 dBTP).
 
 ## Installation
 
