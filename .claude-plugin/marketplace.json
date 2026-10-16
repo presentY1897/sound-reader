@@ -1,0 +1,11 @@
+{
+  "name": "sound-reader",
+  "owner": { "name": "presenty1897", "email": "presenty1897@gmail.com" },
+  "plugins": [
+    {
+      "name": "sound-reader",
+      "source": "./",
+      "description": "Audio → images + metrics so Claude can analyse sound files."
+    }
+  ]
+}

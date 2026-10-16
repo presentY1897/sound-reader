@@ -1,0 +1,97 @@
+# sound-reader
+
+**A skill that lets Claude and Codex "read" sound.**
+LLMs can't hear audio. They can read images and numbers, though. sound-reader turns an audio file into
+**images** (waveform, loudness curve, spectrogram, spectrum, sample-level zoom) and **exact measurements**
+(LUFS, true peak, clipping, noise floor, hum, onsets/tempo, pitch, key, stereo phase), so an agent can look at a sound and analyse it.
+
+It works for any kind of sound: game/UI sound effects, music, voice recordings, TTS output, and debugging an audio pipeline.
+
+> It is not just a spectrogram renderer. It **measures** (BS.1770 loudness, flat-top clipping, hum, …), **raises automatic warnings** (`flags`),
+> and ships an **interpretation guide** (`references/interpretation.md`) that tells the agent what each pattern in the images means, so the agent can diagnose the sound itself.
+> It runs on pure Python (numpy/scipy/matplotlib), so no separate binary install is needed.
+
+![overview example](docs/example-overview.png)
+
+## Installation
+
+Prerequisites: Python 3.9+, `numpy scipy matplotlib` (`pip install -r requirements.txt`).
+To read formats other than WAV (mp3, m4a, ogg, flac, video, ...) you also need `ffmpeg`.
+
+### Claude Code: plugin (recommended)
+
+```
+/plugin marketplace add presentY1897/sound-reader
+/plugin install sound-reader@sound-reader
+```
+
+### Claude Code / Codex: clone + install script
+
+```bash
+git clone https://github.com/presentY1897/sound-reader.git
+cd sound-reader
+pip install -r requirements.txt
+./install.sh          # symlinks into whichever of ~/.claude/skills and ~/.codex/skills exists
+# ./install.sh codex  # Codex only
+# ./install.sh claude # Claude Code only
+# ./install.sh --copy # copy instead of symlink
+```
+
+Because it uses symlinks, `git pull` alone updates the skill.
+
+### Manual install
+
+Copy the `skills/sound-reader/` folder to `~/.claude/skills/sound-reader/` (Claude Code) or
+`~/.codex/skills/sound-reader/` (Codex). To use it in a single project only, put it under that project's `.claude/skills/`.
+
+## Usage
+
+Once installed, just mention an audio file in a conversation and the skill is picked up automatically.
+
+> "Check whether `assets/sfx/jump.wav` clips or has a click"
+> "Compare the loudness and tonal balance of these two mixes: `mix_v1.wav` and `mix_v2.wav`"
+> "Is there noise or hum in this recording? `interview.m4a`"
+> "Our synth output sounds weird. Is it a pitch problem? `out/render_440.wav`"
+
+You can also run the script directly:
+
+```bash
+python3 skills/sound-reader/scripts/sound_reader.py analyze input.wav [--out DIR] [--start S --end S] [--music] [--linear-freq]
+python3 skills/sound-reader/scripts/sound_reader.py compare a.wav b.wav [--out DIR]
+```
+
+| Output | Contents |
+|---|---|
+| `overview.png` | waveform · RMS / momentary LUFS (silence and onsets marked) · log-frequency spectrogram + f0 track (· chromagram with `--music`) |
+| `spectrum.png` | average spectrum with peaks labelled (Hz + note name) · energy per band |
+| `detail.png` | sample-level zooms of the loudest moment, the first attack, and the first clip |
+| `summary.json` | all measurements + automatic warnings (`flags`) |
+| `compare.png/json` | spectrum overlay, B−A difference, loudness comparison, metric changes |
+
+## What it measures
+
+- **Level**: peak, true peak (4× oversampled), RMS, crest factor, ITU-R BS.1770 integrated / momentary / short-term LUFS, LRA, DC offset
+- **Integrity**: clipping (flat-top detection), samples over full scale, leading/trailing silence, silence regions
+- **Noise**: noise floor, SNR estimate, 50/60 Hz mains hum detection, band-limiting (lossy / upsampled) detection
+- **Spectrum**: centroid, rolloff, flatness, effective bandwidth, energy share across 7 bands, dominant peaks (with note names)
+- **Rhythm**: onsets, tempo estimate
+- **Pitch / tonality**: f0 track and median (with note name), chroma, key estimate
+- **Stereo**: L/R correlation (phase problems), side/mid ratio, balance, fake-stereo detection
+
+## Limits
+
+- It does not do speech-to-text. Use Whisper or similar if the words matter.
+- f0 is reliable for monophonic sources (a single voice or instrument). Tempo and key are estimates.
+
+## Development
+
+```bash
+python3 -m pytest tests/      # or: python3 tests/test_sound_reader.py
+```
+
+The tests generate synthetic signals with known properties (1 kHz sine = -3.01 LUFS, A4 = 440 Hz, a 120 BPM click track, 60 Hz hum, clipping,
+polarity inversion, low-pass filtering, a C major progression) and check the measurements against those values.
+
+## License
+
+MIT
