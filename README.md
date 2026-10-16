@@ -115,9 +115,6 @@ pin a specific recommendation here:
 
 - **Up-to-date comparison:** [Hugging Face Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard)
 - *Examples as of 2026-10 (may be outdated):* OpenAI Whisper family (local: `faster-whisper`), cloud STT APIs. Codex has OpenAI's `transcribe` skill.
-- **Caution:** running ASR on audio with no speech (sound effects, instrumental music) often produces hallucinated text such as "Thanks for watching" or song credits.
-  Our own tests reproduced this, and it was blocked by voice activity detection (VAD) plus filtering out high no-speech-probability segments.
-  A good workflow is to check with sound-reader first whether there is speech at all, and only then run ASR.
 
 **Other limits**
 - f0 is reliable for monophonic sources (a single voice or instrument). For chords or a full mix it shows `pitch.reliable: false`.
