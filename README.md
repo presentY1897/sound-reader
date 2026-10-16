@@ -101,10 +101,28 @@ python3 skills/sound-reader/scripts/sound_reader.py compare a.wav b.wav [--out D
 - **Pitch / tonality**: f0 track and median (with note name), chroma, key estimate
 - **Stereo**: L/R correlation (phase problems), side/mid ratio, balance, fake-stereo detection
 
-## Limits
+## Scope and limits
 
-- It does not do speech-to-text. Use Whisper or similar if the words matter.
-- f0 is reliable for monophonic sources (a single voice or instrument). Tempo and key are estimates.
+**What it is for:** turning a sound's waveform and spectrum into images and numbers, so that an LLM can understand through images and measurements
+*what the sound is like and what is wrong with it*: timbre, structure, level, noise, defects.
+
+**What it does not do: extract text (speech-to-text).** sound-reader can tell that someone is speaking and how
+(pitch, intonation, syllable structure, pauses, consonant and vowel character), but it does not determine *what* they said. Speech recognition needs a separate
+trained model and a heavy runtime environment, which goes against this project's goal of staying light and dependency-free, so it is deliberately left out.
+
+If you need the words, use a separate speech recognition (ASR / speech-to-text) tool. The options change quickly, so we don't
+pin a specific recommendation here:
+
+- **Up-to-date comparison:** [Hugging Face Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard)
+- *Examples as of 2026-10 (may be outdated):* OpenAI Whisper family (local: `faster-whisper`), cloud STT APIs. Codex has OpenAI's `transcribe` skill.
+- **Caution:** running ASR on audio with no speech (sound effects, instrumental music) often produces hallucinated text such as "Thanks for watching" or song credits.
+  Our own tests reproduced this, and it was blocked by voice activity detection (VAD) plus filtering out high no-speech-probability segments.
+  A good workflow is to check with sound-reader first whether there is speech at all, and only then run ASR.
+
+**Other limits**
+- f0 is reliable for monophonic sources (a single voice or instrument). For chords or a full mix it shows `pitch.reliable: false`.
+- Tempo and key are estimates (tempo can be off by a factor of 2).
+- It does not separate sources (vocals/drums) or classify sounds with a model ("this is a dog barking"). Identifying a sound is up to the LLM reasoning from the images and numbers.
 
 ## Development
 

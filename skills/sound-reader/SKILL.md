@@ -93,8 +93,17 @@ Mention image paths only when the user might want to open them.
 
 ## Limits (be upfront about these)
 
-- No speech-to-text: you can tell *that* someone speaks and roughly how (pitch, pace, pauses, level), but not
-  *what* they say. Suggest a transcription tool (e.g. Whisper) if words matter.
+- **No speech-to-text, by design.** This skill is for understanding a sound through images and measurements.
+  It does not extract words. You can tell *that* someone speaks and *how* (pitch contour, syllables, fricatives
+  vs. plosives, pauses, level), but not *what* they say. Don't guess words from the spectrogram.
+  If the user needs the words, say that a speech-recognition (ASR / speech-to-text) tool is needed:
+  - First check what this environment already offers: a transcription skill or tool in your tool list (Codex, for example,
+    may have a `transcribe` skill) or an ASR package that is already installed. Prefer that over suggesting new installs.
+  - Don't present any specific product as the current best. Options change quickly. If the user wants a recommendation
+    and you can browse, check a maintained comparison such as the Hugging Face Open ASR Leaderboard.
+    Otherwise name examples as examples ("e.g. Whisper-family models, cloud STT APIs") and say they may be dated.
+  - Warn that ASR hallucinates on non-speech audio (sound effects, instrumentals), producing phrases like
+    "Thanks for watching" or song credits. Use this skill's analysis to confirm there is speech before trusting a transcript.
 - `f0` is a single periodicity track. It is reliable for one voice, one instrument, or tones. For chords or full
   mixes it shows the common periodicity, which may be a "missing fundamental" below the actual notes.
 - `tempo_bpm_estimate` can be off by a factor of 2 or 1.5, and `key_estimate` is a statistical guess.
