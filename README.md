@@ -53,6 +53,16 @@ If you have no GitHub SSH key and the first line fails to clone, use the HTTPS a
 
 The plugin installs only the skill. The Python packages have to be installed separately (`pip install numpy scipy matplotlib`).
 
+### Claude app (claude.ai / desktop)
+
+1. Download `sound-reader.zip` from the [latest release](https://github.com/presentY1897/sound-reader/releases/latest).
+2. In the Claude app, enable **Settings → Capabilities → Code execution and file creation**.
+3. In the same screen, go to **Skills → Upload skill** and upload the zip.
+4. Attach an audio file to a conversation and ask, for example, "Analyse this sound".
+
+In the Claude app the analysis runs in its code execution sandbox. WAV works reliably. Formats such as mp3 or ogg
+depend on whether the sandbox has `ffmpeg` or `soundfile`. If they fail, convert to WAV first.
+
 ### Claude Code / Codex: clone + install script
 
 ```bash
